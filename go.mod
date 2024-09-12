@@ -1,4 +1,4 @@
-module migrator
+module github.com/AlonMell/migrator
 
 go 1.22
 
