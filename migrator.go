@@ -98,7 +98,7 @@ func (m *Migrator) execBoundsFiles() error {
 		return fmt.Errorf("%s: %w", op, err)
 	}
 
-	scripts := make(map[int]string)
+	scripts := make([]string, second-first+1)
 	errCh := make(chan error, second-first+1)
 	var wg sync.WaitGroup
 
@@ -120,7 +120,7 @@ func (m *Migrator) execBoundsFiles() error {
 				return
 			}
 
-			scripts[i] = string(script)
+			scripts[i-first] = string(script)
 		}(i, files[i].Name())
 	}
 
@@ -131,8 +131,8 @@ func (m *Migrator) execBoundsFiles() error {
 		return <-errCh
 	}
 
-	for i := first; i <= second; i++ {
-		if err := m.execScript(scripts[i]); err != nil {
+	for _, script := range scripts {
+		if err := m.execScript(script); err != nil {
 			return fmt.Errorf("%s: %w", op, err)
 		}
 	}
