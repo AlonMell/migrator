@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sync"
 )
 
 type Migrator struct {
@@ -51,6 +52,7 @@ func (m *Migrator) Migrate() error {
 	if m.Target.Major < m.Current.Major ||
 		m.Target.Major == m.Current.Major &&
 			m.Target.Minor <= m.Current.Minor {
+
 		return nil
 	}
 
@@ -96,36 +98,56 @@ func (m *Migrator) execBoundsFiles() error {
 		return fmt.Errorf("%s: %w", op, err)
 	}
 
-	for first <= second {
-		err = m.exec(files[first].Name())
-		if err != nil {
+	scripts := make(map[int]string)
+	errCh := make(chan error, second-first+1)
+	var wg sync.WaitGroup
+
+	for i := first; i <= second; i++ {
+		wg.Add(1)
+		go func(i int, fileName string) {
+			defer wg.Done()
+			path := filepath.Join(m.Path, fileName)
+			file, err := os.Open(path)
+			if err != nil {
+				errCh <- fmt.Errorf("%s: %w", op, err)
+				return
+			}
+			defer file.Close()
+
+			script, err := io.ReadAll(file)
+			if err != nil {
+				errCh <- fmt.Errorf("%s: %w", op, err)
+				return
+			}
+
+			scripts[i] = string(script)
+		}(i, files[i].Name())
+	}
+
+	wg.Wait()
+	close(errCh)
+
+	if len(errCh) > 0 {
+		return <-errCh
+	}
+
+	for i := first; i <= second; i++ {
+		if err := m.execScript(scripts[i]); err != nil {
 			return fmt.Errorf("%s: %w", op, err)
 		}
-		first++
 	}
 
 	return nil
 }
 
 // exec execute sql script
-func (m *Migrator) exec(name string) error {
-	const op = "migrator.exec"
-
-	path := filepath.Join(m.Path, name)
-	file, err := os.Open(path)
+func (m *Migrator) execScript(script string) error {
+	const op = "migrator.execScript"
+	_, err := m.db.Exec(script)
 	if err != nil {
 		return fmt.Errorf("%s: %w", op, err)
 	}
-	defer file.Close()
-
-	// TODO: сделать чтение с горутинами
-	script, err := io.ReadAll(file)
-	if err != nil {
-		return fmt.Errorf("%s: %w", op, err)
-	}
-
-	_, err = m.db.Exec(string(script))
-	return err
+	return nil
 }
 
 func (m *Migrator) tableExists() (bool, error) {

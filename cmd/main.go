@@ -4,9 +4,8 @@ import (
 	"database/sql"
 	"flag"
 	"fmt"
+	"github.com/AlonMell/migrator"
 	_ "github.com/lib/pq"
-
-	"migrator"
 )
 
 type DBConfig struct {
