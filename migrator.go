@@ -24,24 +24,23 @@ type Migration struct {
 func New(db *sql.DB, path, table string, major, minor int) *Migrator {
 	return &Migrator{
 		db:      db,
-		Table:   table,
+		Table:   "migrations_history",
 		Path:    path,
-		Target:  &Migration{major, minor, 0},
-		Current: &Migration{},
+		Target:  &Migration{major, minor, 2},
+		Current: &Migration{major, minor, 0},
 	}
 }
 
 // TODO: Сделать автодобавление новой записи миграций
-// TODO: Сделать парсинг файлов в горутинах (И последовательное выполнение скриптов)
-// TODO: Сделать возможность отката к предыдущим версиям (добавить up/down)
-// TODO: Возможно, ускорить поиск подходящего номера файла
+// Готово TODO: Сделать парсинг файлов в горутинах (И последовательное выполнение скриптов)
+// Готово TODO: Сделать возможность отката к предыдущим версиям (добавить up/down)
+// Сделано по другомуTODO: Возможно, ускорить поиск подходящего номера файла
 
 func (m *Migrator) Migrate() error {
 	if exists, err := m.tableExists(); err != nil {
 		return err
 	} else if !exists {
-		m.Target.findFileNumber(m.Path)
-		err = m.execBoundsFiles()
+		err = m.ExecBoundsFiles("up")
 		return err
 	}
 
@@ -49,20 +48,49 @@ func (m *Migrator) Migrate() error {
 		return err
 	}
 
-	if m.Target.Major < m.Current.Major ||
-		m.Target.Major == m.Current.Major &&
-			m.Target.Minor <= m.Current.Minor {
-
-		return nil
+	if m.Target.FileNumber > m.Current.FileNumber {
+		// Apply up migrations
+		err := m.ExecBoundsFiles("up")
+		if err != nil {
+			return err
+		}
+	} else if m.Target.FileNumber < m.Current.FileNumber {
+		// Apply down migrations
+		err := m.ExecBoundsFiles("down")
+		if err != nil {
+			return err
+		}
 	}
-
-	m.Target.findFileNumber(m.Path)
-	m.Current.FileNumber++
-
-	err := m.execBoundsFiles()
-
-	return err
+	return nil
 }
+
+//func (m *Migrator) Migrate() error {
+//	if exists, err := m.tableExists(); err != nil {
+//		return err
+//	} else if !exists {
+//		m.Target.findFileNumber(m.Path)
+//		err = m.ExecBoundsFiles()
+//		return err
+//	}
+//
+//	if err := m.setCurrentVersion(); err != nil {
+//		return err
+//	}
+//
+//	if m.Target.Major < m.Current.Major ||
+//		m.Target.Major == m.Current.Major &&
+//			m.Target.Minor <= m.Current.Minor {
+//
+//		return nil
+//	}
+//
+//	m.Target.findFileNumber(m.Path)
+//	m.Current.FileNumber++
+//
+//	err := m.ExecBoundsFiles()
+//
+//	return err
+//}
 
 func (m *Migrator) setCurrentVersion() error {
 	const op = "migrator.setCurrentVersion"
@@ -87,43 +115,71 @@ func (m *Migrator) setCurrentVersion() error {
 	return nil
 }
 
-// execBoundsFiles execute all sql scripts in directory where first, second - it's bounds
-func (m *Migrator) execBoundsFiles() error {
+// execBoundsFiles execute all sql scripts in directory where first, last - it's bounds
+func (m *Migrator) ExecBoundsFiles(direction string) error {
 	const op = "migrator.execBoundsFiles"
 
-	first, second := m.Current.FileNumber, m.Target.FileNumber
+	var first, last int
+	if direction == "up" {
+		first, last = m.Current.FileNumber, m.Target.FileNumber
+	} else if direction == "down" {
+		first, last = m.Target.FileNumber, m.Current.FileNumber
+	}
 
 	files, err := os.ReadDir(m.Path)
 	if err != nil {
 		return fmt.Errorf("%s: %w", op, err)
 	}
 
-	scripts := make([]string, second-first+1)
-	errCh := make(chan error, second-first+1)
 	var wg sync.WaitGroup
+	scripts := make([]string, last-first)
+	errCh := make(chan error, last-first)
 
-	for i := first; i <= second; i++ {
-		wg.Add(1)
-		go func(i int, fileName string) {
-			defer wg.Done()
-			path := filepath.Join(m.Path, fileName)
-			file, err := os.Open(path)
-			if err != nil {
-				errCh <- fmt.Errorf("%s: %w", op, err)
-				return
-			}
-			defer file.Close()
+	if direction == "up" {
+		for i := first; i < last; i++ {
+			wg.Add(1)
+			go func(i int, fileName string) {
+				defer wg.Done()
+				path := filepath.Join(m.Path, fileName)
+				file, err := os.Open(path)
+				if err != nil {
+					errCh <- fmt.Errorf("%s: %w", op, err)
+					return
+				}
+				defer file.Close()
 
-			script, err := io.ReadAll(file)
-			if err != nil {
-				errCh <- fmt.Errorf("%s: %w", op, err)
-				return
-			}
+				script, err := io.ReadAll(file)
+				if err != nil {
+					errCh <- fmt.Errorf("%s: %w", op, err)
+					return
+				}
 
-			scripts[i-first] = string(script)
-		}(i, files[i].Name())
+				scripts[i/2-first] = string(script)
+			}(2*i+1, files[2*i+1].Name())
+		}
+	} else if direction == "down" {
+		for i := first; i < last; i++ {
+			wg.Add(1)
+			go func(i int, fileName string) {
+				defer wg.Done()
+				path := filepath.Join(m.Path, fileName)
+				file, err := os.Open(path)
+				if err != nil {
+					errCh <- fmt.Errorf("%s: %w", op, err)
+					return
+				}
+				defer file.Close()
+
+				script, err := io.ReadAll(file)
+				if err != nil {
+					errCh <- fmt.Errorf("%s: %w", op, err)
+					return
+				}
+
+				scripts[last-i/2-1] = string(script) // 4 3 -> 5
+			}(2*i, files[2*i].Name())
+		}
 	}
-
 	wg.Wait()
 	close(errCh)
 
@@ -138,6 +194,22 @@ func (m *Migrator) execBoundsFiles() error {
 	}
 
 	return nil
+
+}
+
+func readScript(path string) (string, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+
+	script, err := io.ReadAll(file)
+	if err != nil {
+		return "", err
+	}
+
+	return string(script), nil
 }
 
 // exec execute sql script

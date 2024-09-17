@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"github.com/AlonMell/migrator"
 	_ "github.com/lib/pq"
+	"os"
+	"path/filepath"
 )
 
 type DBConfig struct {
@@ -37,8 +39,8 @@ func main() {
 	cfg := DBConfig{
 		Host:     "localhost",
 		Port:     5432,
-		User:     "alonmell",
-		Password: "qwerty",
+		User:     "postgres",
+		Password: "FRD_3456",
 		Database: "ProviderHub",
 	}
 	db := MustConnect(cfg)
@@ -51,7 +53,9 @@ func main() {
 	flag.IntVar(&minor, "minor", minor, "minor version")
 	flag.Parse()
 
-	m := migrator.New(db, path, table, major, minor)
+	dir, _ := os.Getwd()
+	dir = filepath.Join(dir, "migrations/postgresql")
+	m := migrator.New(db, dir, table, major, minor)
 	if err := m.Migrate(); err != nil {
 		panic(err)
 	}
