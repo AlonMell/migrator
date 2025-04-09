@@ -7,13 +7,9 @@ import (
 	"io"
 	"log/slog"
 	"os"
-	"path/filepath"
-	"sort"
 	"strconv"
-	"strings"
 
 	"github.com/AlonMell/grovelog"
-	"github.com/AlonMell/grovelog/util"
 )
 
 // MigrationType indicates the type of migration operation
@@ -129,133 +125,6 @@ func (m *Migrator) determineMigrationType() MigrationType {
 	}
 }
 
-// getFilesToExecute gets the list of files to execute based on migration type
-func (m *Migrator) getFilesToExecute(migrationType MigrationType) ([]string, error) {
-	allFiles, err := m.findMigrationFiles()
-	if err != nil {
-		return nil, fmt.Errorf("finding migration files: %w", err)
-	}
-
-	var filteredFiles []string
-
-	if migrationType == MigrationUp {
-		filteredFiles = m.filterUpMigrationFiles(allFiles)
-	} else {
-		filteredFiles = m.filterDownMigrationFiles(allFiles)
-	}
-
-	return filteredFiles, nil
-}
-
-// filterUpMigrationFiles filters and sorts up migration files
-func (m *Migrator) filterUpMigrationFiles(files []string) []string {
-	var result []string
-
-	for _, file := range files {
-		if !IsUpMigration(file) {
-			continue
-		}
-
-		version, err := ParseVersionFromFilename(file)
-		if err != nil {
-			m.logger.Warn("Skipping file with invalid name", "name", file)
-			continue
-		}
-
-		// Include files with version higher than current and up to target
-		if version.CompareTo(m.current) > 0 && version.CompareTo(m.target) <= 0 {
-			result = append(result, file)
-		}
-	}
-
-	// Sort files by version
-	sort.Slice(result, func(i, j int) bool {
-		vI, _ := ParseVersionFromFilename(result[i])
-		vJ, _ := ParseVersionFromFilename(result[j])
-		return vI.CompareTo(vJ) < 0
-	})
-
-	return result
-}
-
-// filterDownMigrationFiles filters and sorts down migration files
-func (m *Migrator) filterDownMigrationFiles(files []string) []string {
-	var result []string
-
-	for _, file := range files {
-		if !IsDownMigration(file) {
-			continue
-		}
-
-		version, err := ParseVersionFromFilename(file)
-		if err != nil {
-			m.logger.Warn("Skipping file with invalid name", "name", file)
-			continue
-		}
-
-		// Include files with version less than or equal to current and higher than target
-		if version.CompareTo(m.current) <= 0 && version.CompareTo(m.target) > 0 {
-			result = append(result, file)
-		}
-	}
-
-	// Sort files by version in descending order for down migration
-	sort.Slice(result, func(i, j int) bool {
-		vI, _ := ParseVersionFromFilename(result[i])
-		vJ, _ := ParseVersionFromFilename(result[j])
-		return vI.CompareTo(vJ) > 0
-	})
-
-	return result
-}
-
-// executeFile executes a migration file
-func (m *Migrator) executeFile(ctx context.Context, filename string) error {
-	m.logger.InfoContext(ctx, "Executing file", "filename", filename)
-
-	version, err := ParseVersionFromFilename(filename)
-	if err != nil {
-		return fmt.Errorf("parsing version from filename: %w", err)
-	}
-
-	filePath := filepath.Join(m.path, filename)
-	content, err := m.readFile(filePath)
-	if err != nil {
-		return fmt.Errorf("reading file: %w", err)
-	}
-
-	tx, err := m.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("beginning transaction: %w", err)
-	}
-
-	defer func() {
-		if err != nil {
-			m.logger.ErrorContext(ctx, "Rolling back transaction", util.Err(err))
-			_ = tx.Rollback()
-		}
-	}()
-
-	if _, err = tx.ExecContext(ctx, string(content)); err != nil {
-		return fmt.Errorf("executing SQL: %w", err)
-	}
-
-	// Record migration in history table if not already recorded in the SQL
-	if !strings.Contains(string(content), fmt.Sprintf("INSERT INTO %s", m.table)) {
-		comment := GetCommentFromFilename(filename)
-		if err = m.recordMigration(ctx, tx, version, comment, IsUpMigration(filename)); err != nil {
-			return fmt.Errorf("recording migration: %w", err)
-		}
-	}
-
-	if err = tx.Commit(); err != nil {
-		return fmt.Errorf("committing transaction: %w", err)
-	}
-
-	m.logger.InfoContext(ctx, "Successfully executed file", "filename", filename)
-	return nil
-}
-
 // readFile reads the content of a file
 func (m *Migrator) readFile(path string) ([]byte, error) {
 	file, err := os.Open(path)
@@ -301,23 +170,6 @@ func (m *Migrator) recordMigration(ctx context.Context, tx *sql.Tx, version *Ver
 	return nil
 }
 
-// findMigrationFiles finds all migration files in the path
-func (m *Migrator) findMigrationFiles() ([]string, error) {
-	files, err := os.ReadDir(m.path)
-	if err != nil {
-		return nil, fmt.Errorf("reading directory: %w", err)
-	}
-
-	var result []string
-	for _, file := range files {
-		if !file.IsDir() && (IsUpMigration(file.Name()) || IsDownMigration(file.Name())) {
-			result = append(result, file.Name())
-		}
-	}
-
-	return result, nil
-}
-
 // fetchCurrentVersion fetches the current version from the database
 func (m *Migrator) fetchCurrentVersion(ctx context.Context) error {
 	query := fmt.Sprintf(`
@@ -357,46 +209,5 @@ func (m *Migrator) fetchCurrentVersion(ctx context.Context) error {
 	fileNumInt, _ := strconv.Atoi(fileNum)
 
 	m.current = NewVersion(majorInt, minorInt, fileNumInt)
-	return nil
-}
-
-// tableExists checks if the migration table exists
-func (m *Migrator) tableExists(ctx context.Context) (bool, error) {
-	query := `
-		SELECT EXISTS (
-			SELECT FROM information_schema.tables
-			WHERE table_schema = 'public'
-			AND table_name = $1
-		)
-	`
-
-	var exists bool
-	err := m.db.QueryRowContext(ctx, query, m.table).Scan(&exists)
-	if err != nil {
-		return false, fmt.Errorf("querying table existence: %w", err)
-	}
-
-	return exists, nil
-}
-
-// createMigrationTable creates the migration table
-func (m *Migrator) createMigrationTable(ctx context.Context) error {
-	query := fmt.Sprintf(`
-		CREATE TABLE IF NOT EXISTS %s (
-			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-			date_applied TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-			major_version VARCHAR(2),
-			minor_version VARCHAR(2),
-			file_number VARCHAR(4),
-			comment TEXT,
-			migration_type VARCHAR(4)
-		)
-	`, m.table)
-
-	_, err := m.db.ExecContext(ctx, query)
-	if err != nil {
-		return fmt.Errorf("creating migration table: %w", err)
-	}
-
 	return nil
 }
