@@ -11,7 +11,7 @@ type Version struct {
 	FileNumber int
 }
 
-// NewVersion creates a new Version instance
+// New creates a new Version instance
 func New(major, minor, fileNumber int) *Version {
 	return &Version{
 		Major:      major,

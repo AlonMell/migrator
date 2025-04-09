@@ -4,10 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"io"
 	"log/slog"
 	"os"
-	"strconv"
 
 	"github.com/AlonMell/grovelog"
 )
@@ -21,6 +19,13 @@ const (
 	// MigrationDown represents a down migration
 	MigrationDown
 )
+
+type Logger interface {
+	DebugContext(ctx context.Context, msg string, args ...any)
+	InfoContext(ctx context.Context, msg string, args ...any)
+	WarnContext(ctx context.Context, msg string, args ...any)
+	ErrorContext(ctx context.Context, msg string, args ...any)
+}
 
 // Migrator handles database migrations
 type Migrator struct {
@@ -123,91 +128,4 @@ func (m *Migrator) determineMigrationType() MigrationType {
 	default:
 		return MigrationUp
 	}
-}
-
-// readFile reads the content of a file
-func (m *Migrator) readFile(path string) ([]byte, error) {
-	file, err := os.Open(path)
-	if err != nil {
-		return nil, fmt.Errorf("opening file: %w", err)
-	}
-	defer file.Close()
-
-	content, err := io.ReadAll(file)
-	if err != nil {
-		return nil, fmt.Errorf("reading file: %w", err)
-	}
-
-	return content, nil
-}
-
-// recordMigration records a migration in the history table
-func (m *Migrator) recordMigration(ctx context.Context, tx *sql.Tx, version *Version, comment string, isUp bool) error {
-	query := fmt.Sprintf(`
-		INSERT INTO %s (major_version, minor_version, file_number, comment, migration_type)
-		VALUES ($1, $2, $3, $4, $5)
-	`, m.table)
-
-	migrationType := "up"
-	if !isUp {
-		migrationType = "down"
-	}
-
-	_, err := tx.ExecContext(
-		ctx,
-		query,
-		fmt.Sprintf("%02d", version.Major),
-		fmt.Sprintf("%02d", version.Minor),
-		fmt.Sprintf("%04d", version.FileNumber),
-		comment,
-		migrationType,
-	)
-
-	if err != nil {
-		return fmt.Errorf("inserting migration record: %w", err)
-	}
-
-	return nil
-}
-
-// fetchCurrentVersion fetches the current version from the database
-func (m *Migrator) fetchCurrentVersion(ctx context.Context) error {
-	query := fmt.Sprintf(`
-		WITH latest_migrations AS (
-			SELECT
-				major_version,
-				minor_version,
-				file_number,
-				date_applied,
-				ROW_NUMBER() OVER (
-					PARTITION BY major_version, minor_version, file_number
-					ORDER BY date_applied DESC
-				) as rn
-			FROM %s
-		)
-		SELECT major_version, minor_version, file_number
-		FROM latest_migrations
-		WHERE rn = 1
-		ORDER BY date_applied DESC
-		LIMIT 1
-	`, m.table)
-
-	var major, minor, fileNum string
-
-	err := m.db.QueryRowContext(ctx, query).Scan(&major, &minor, &fileNum)
-	if err != nil {
-		if err == sql.ErrNoRows {
-			// No migrations applied yet
-			m.current = NewVersion(0, 0, 0)
-			return nil
-		}
-		return fmt.Errorf("querying current version: %w", err)
-	}
-
-	majorInt, _ := strconv.Atoi(major)
-	minorInt, _ := strconv.Atoi(minor)
-	fileNumInt, _ := strconv.Atoi(fileNum)
-
-	m.current = NewVersion(majorInt, minorInt, fileNumInt)
-	return nil
 }

@@ -2,36 +2,22 @@ package migrator
 
 import (
 	"fmt"
+	"io"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/AlonMell/migrator/internal/version"
 )
 
 type Parser struct {
 	filename string
 }
 
-func NewParser(filename string) *Parser {
+// New creates a new Parser instance
+func New(filename string) *Parser {
 	return &Parser{filename: filename}
-}
-
-// ParseVersionFromFilename extracts version information from a migration filename
-// Expected formats:
-// - nnnn.mm.nn[.comment].(up|down).sql
-// where nnnn is the file number, mm is the major version, and nn is the minor version
-func (p *Parser) ParseVersionFromFilename() (*Version, error) {
-	re := regexp.MustCompile(`^(\d{4})\.(\d{2})\.(\d{2})`)
-	matches := re.FindStringSubmatch(p.filename)
-
-	if len(matches) != 4 {
-		return nil, fmt.Errorf("invalid filename format: %s", p.filename)
-	}
-
-	fileNumber, _ := strconv.Atoi(matches[1])
-	major, _ := strconv.Atoi(matches[2])
-	minor, _ := strconv.Atoi(matches[3])
-
-	return NewVersion(major, minor, fileNumber), nil
 }
 
 // GetCommentFromFilename extracts the comment part from a filename
@@ -43,7 +29,6 @@ func (p *Parser) GetCommentFromFilename() string {
 
 	parts := strings.Split(base, ".")
 
-	// Skip the first three parts (file number, major, minor)
 	if len(parts) > 3 {
 		return strings.Join(parts[3:], ".")
 	}
@@ -69,4 +54,39 @@ func (p *Parser) GetBaseName() string {
 		return strings.TrimSuffix(p.filename, ".down.sql")
 	}
 	return p.filename
+}
+
+// ReadFile reads the content of a file
+func (p *Parser) ReadFile(path string) ([]byte, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("opening file: %w", err)
+	}
+	defer file.Close()
+
+	content, err := io.ReadAll(file)
+	if err != nil {
+		return nil, fmt.Errorf("reading file: %w", err)
+	}
+
+	return content, nil
+}
+
+// ParseVersionFromFilename extracts version information from a migration filename
+// Expected formats:
+// - nnnn.mm.nn[.comment].(up|down).sql
+// where nnnn is the file number, mm is the major version, and nn is the minor version
+func (p *Parser) GetVersionFromFileName(fileName string) (*version.Version, error) {
+	re := regexp.MustCompile(`^(\d{4})\.(\d{2})\.(\d{2})`)
+	matches := re.FindStringSubmatch(fileName)
+
+	if len(matches) != 4 {
+		return nil, fmt.Errorf("invalid filename format: %s", fileName)
+	}
+
+	fileNumber, _ := strconv.Atoi(matches[1])
+	major, _ := strconv.Atoi(matches[2])
+	minor, _ := strconv.Atoi(matches[3])
+
+	return version.New(major, minor, fileNumber), nil
 }
