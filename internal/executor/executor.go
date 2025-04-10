@@ -1,4 +1,4 @@
-package migrator
+package executor
 
 import (
 	"context"
@@ -9,33 +9,62 @@ import (
 	"strings"
 
 	"github.com/AlonMell/grovelog/util"
-	"github.com/AlonMell/migrator/internal/infra/logger"
-	"github.com/AlonMell/migrator/internal/version"
+	"github.com/AlonMell/migrator/pkg/types"
+	"github.com/AlonMell/migrator/pkg/version"
 )
 
-type Parser interface {
-	IsUpMigration(string) bool
-	IsDownMigration(string) bool
-	ParseVersionFromFilename(string) (*version.Version, error)
-	ReadFile(string) ([]byte, error)
-	GetCommentFromFilename() string
+type Reader interface {
+	ReadFile(ctx context.Context) ([]byte, error)
 }
 
+// Executor implements the Interface for executing migration files
 type Executor struct {
-	db      *sql.DB
-	table   string
-	logger  logger.Interface
-	parser  Parser
-	path    string
-	current *version.Version
-	target  *version.Version
+	db     *sql.DB
+	table  string
+	logger types.Logger
+	reader Reader
 }
 
-// executeFile executes a migration file
-func (e *Executor) executeFile(ctx context.Context, filename string) error {
+// New creates a new Executor instance
+func New(db *sql.DB, table string, logger types.Logger, reader Reader) *Executor {
+	return &Executor{
+		db:     db,
+		table:  table,
+		logger: logger,
+		reader: reader,
+	}
+}
+
+func (e *Executor) InitializeTable(ctx context.Context) error {
+	// Check if migration table exists
+	exists, err := e.tableExists(ctx)
+	if err != nil {
+		return fmt.Errorf("checking migration table: %w", err)
+	}
+
+	// Create table if it doesn't exist
+	if !exists {
+		e.logger.InfoContext(ctx, "Migration table doesn't exist, creating it")
+		if err := e.createMigrationTable(ctx); err != nil {
+			return fmt.Errorf("creating migration table: %w", err)
+		}
+	} else {
+		current, err := e.fetchCurrentVersion(ctx)
+		if err != nil {
+			return fmt.Errorf("fetching current version: %w", err)
+		}
+
+		e.logger.InfoContext(ctx, "Current database version", "version", current)
+	}
+
+	return nil
+}
+
+// ExecuteFile executes a migration file
+func (e *Executor) Execute(ctx context.Context, filename string) error {
 	e.logger.InfoContext(ctx, "Executing file", "filename", filename)
 
-	version, err := e.parser.ParseVersionFromFilename(filename)
+	version, err := e.parser.GetVersionFromFilename(filename)
 	if err != nil {
 		return fmt.Errorf("parsing version from filename: %w", err)
 	}
@@ -64,7 +93,7 @@ func (e *Executor) executeFile(ctx context.Context, filename string) error {
 
 	// Record migration in history table if not already recorded in the SQL
 	if !strings.Contains(string(content), fmt.Sprintf("INSERT INTO %s", e.table)) {
-		comment := e.parser.GetCommentFromFilename()
+		comment := e.parser.GetCommentFromFilename(filename)
 		if err = e.recordMigration(ctx, tx, version, comment, e.parser.IsUpMigration(filename)); err != nil {
 			return fmt.Errorf("recording migration: %w", err)
 		}
@@ -120,7 +149,7 @@ func (e *Executor) createMigrationTable(ctx context.Context) error {
 }
 
 // fetchCurrentVersion fetches the current version from the database
-func (e *Executor) fetchCurrentVersion(ctx context.Context) error {
+func (e *Executor) fetchCurrentVersion(ctx context.Context) (*version.Version, error) {
 	query := fmt.Sprintf(`
 		WITH latest_migrations AS (
 			SELECT
@@ -147,18 +176,16 @@ func (e *Executor) fetchCurrentVersion(ctx context.Context) error {
 	if err != nil {
 		if err == sql.ErrNoRows {
 			// No migrations applied yet
-			e.current = version.New(0, 0, 0)
-			return nil
+			return version.New(0, 0, 0), nil
 		}
-		return fmt.Errorf("querying current version: %w", err)
+		return nil, fmt.Errorf("querying current version: %w", err)
 	}
 
 	majorInt, _ := strconv.Atoi(major)
 	minorInt, _ := strconv.Atoi(minor)
 	fileNumInt, _ := strconv.Atoi(fileNum)
 
-	e.current = version.New(majorInt, minorInt, fileNumInt)
-	return nil
+	return version.New(majorInt, minorInt, fileNumInt), nil
 }
 
 // recordMigration records a migration in the history table
