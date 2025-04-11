@@ -14,14 +14,14 @@ type Reader struct {
 	path string
 }
 
-func New(files []*types.File, path string) *Reader {
+func New(path string) *Reader {
 	return &Reader{
 		path: path,
 	}
 }
 
 // ReadFile reads the content of a file
-func (r *Reader) ReadFile(ctx context.Context, fileInfo *types.File) ([]byte, error) {
+func (r *Reader) ReadFile(ctx context.Context, fileInfo *types.FileInfo) ([]byte, error) {
 	path := filepath.Join(r.path, fileInfo.Name)
 	file, err := os.Open(path)
 	if err != nil {

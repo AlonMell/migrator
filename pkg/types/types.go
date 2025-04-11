@@ -16,6 +16,17 @@ const (
 	MigrationDown
 )
 
+func (m MigrationType) String() string {
+	switch m {
+	case MigrationUp:
+		return "up"
+	case MigrationDown:
+		return "down"
+	default:
+		return "unknown"
+	}
+}
+
 // Logger defines the interface for logging in the application
 type Logger interface {
 	DebugContext(ctx context.Context, msg string, args ...any)
@@ -24,17 +35,21 @@ type Logger interface {
 	ErrorContext(ctx context.Context, msg string, args ...any)
 }
 
-type File struct {
+type FileInfo struct {
 	Name    string
+	Version *version.Version
 	Comment string
 	Type    MigrationType
-	Version *version.Version
 }
 
-func NewFile(comment string, migrationType MigrationType, version *version.Version) *File {
-	return &File{
+func NewFile(
+	name string, comment string,
+	migrationType MigrationType, version *version.Version,
+) *FileInfo {
+	return &FileInfo{
+		Name:    name,
+		Version: version,
 		Comment: comment,
 		Type:    migrationType,
-		Version: version,
 	}
 }

@@ -6,17 +6,13 @@ import (
 	"os"
 	"sort"
 
+	"github.com/AlonMell/migrator/internal/util/parser"
 	"github.com/AlonMell/migrator/pkg/types"
 	"github.com/AlonMell/migrator/pkg/version"
 )
 
-type Parser interface {
-	GetMigrationFile(fileName string) (*types.File, error)
-}
-
 type Fetcher struct {
 	logger        types.Logger
-	parser        Parser
 	migrationType types.MigrationType
 	current       *version.Version
 	target        *version.Version
@@ -24,12 +20,11 @@ type Fetcher struct {
 
 // New creates a new Fetcher instance
 func New(
-	logger types.Logger, parser Parser, migrationType types.MigrationType,
+	logger types.Logger, migrationType types.MigrationType,
 	current, target *version.Version,
 ) *Fetcher {
 	return &Fetcher{
 		logger:        logger,
-		parser:        parser,
 		migrationType: migrationType,
 		current:       current,
 		target:        target,
@@ -39,13 +34,13 @@ func New(
 // GetFilesToExecute gets the list of files to execute based on migration type
 func (f *Fetcher) GetFilesToExecute(
 	ctx context.Context, path string,
-) ([]*types.File, error) {
+) ([]*types.FileInfo, error) {
 	allFiles, err := f.findMigrationFiles(path)
 	if err != nil {
 		return nil, fmt.Errorf("finding migration files: %w", err)
 	}
 
-	var filteredFiles []*types.File
+	var filteredFiles []*types.FileInfo
 
 	if f.migrationType == types.MigrationUp {
 		filteredFiles = f.filterUpMigrationFiles(ctx, allFiles)
@@ -58,9 +53,9 @@ func (f *Fetcher) GetFilesToExecute(
 
 // filterUpMigrationFiles filters and sorts up migration files
 func (f *Fetcher) filterUpMigrationFiles(
-	ctx context.Context, files []*types.File,
-) []*types.File {
-	var result []*types.File
+	ctx context.Context, files []*types.FileInfo,
+) []*types.FileInfo {
+	var result []*types.FileInfo
 
 	for _, file := range files {
 		if file.Type != types.MigrationUp {
@@ -83,9 +78,9 @@ func (f *Fetcher) filterUpMigrationFiles(
 
 // filterDownMigrationFiles filters and sorts down migration files
 func (f *Fetcher) filterDownMigrationFiles(
-	ctx context.Context, files []*types.File,
-) []*types.File {
-	var result []*types.File
+	ctx context.Context, files []*types.FileInfo,
+) []*types.FileInfo {
+	var result []*types.FileInfo
 
 	for _, file := range files {
 		if file.Type != types.MigrationDown {
@@ -108,19 +103,19 @@ func (f *Fetcher) filterDownMigrationFiles(
 }
 
 // findMigrationFiles finds all migration files in the path
-func (f *Fetcher) findMigrationFiles(path string) ([]*types.File, error) {
+func (f *Fetcher) findMigrationFiles(path string) ([]*types.FileInfo, error) {
 	files, err := os.ReadDir(path)
 	if err != nil {
 		return nil, fmt.Errorf("reading directory: %w", err)
 	}
 
-	var result []*types.File
+	var result []*types.FileInfo
 
 	for _, file := range files {
 		if file.IsDir() {
 			continue
 		}
-		migrationFile, err := f.parser.GetMigrationFile(file.Name())
+		migrationFile, err := parser.GetMigrationFile(file.Name())
 		if err != nil {
 			return nil, err
 		}

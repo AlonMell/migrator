@@ -12,17 +12,17 @@ import (
 
 // Schema manages the migration table schema
 type Schema struct {
+	logger types.Logger
 	db     *sql.DB
 	table  string
-	logger types.Logger
 }
 
 // New creates a new Schema instance
-func New(db *sql.DB, table string, logger types.Logger) *Schema {
+func New(logger types.Logger, db *sql.DB, table string) *Schema {
 	return &Schema{
+		logger: logger,
 		db:     db,
 		table:  table,
-		logger: logger,
 	}
 }
 
