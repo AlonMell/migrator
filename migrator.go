@@ -5,60 +5,15 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
+	"os"
 	"path/filepath"
-	"strconv"
 
+	"github.com/AlonMell/grovelog"
 	"github.com/AlonMell/grovelog/util"
+	"github.com/AlonMell/migrator/internal/parser"
+	ver "github.com/AlonMell/migrator/internal/version"
 )
-
-type MigrationType int
-
-const (
-	Up MigrationType = iota
-	Down
-)
-
-func (mt MigrationType) String() string {
-	if mt == Up {
-		return "up"
-	}
-	return "down"
-}
-
-type Version struct {
-	Major      int
-	Minor      int
-	FileNumber int
-}
-
-func CompareVersion(src, dst Version) int {
-	if src.Major < dst.Major {
-		return -1
-	} else if src.Major > dst.Major {
-		return 1
-	}
-
-	if src.Minor < dst.Minor {
-		return -1
-	} else if src.Minor > dst.Minor {
-		return 1
-	}
-
-	if src.FileNumber < dst.FileNumber {
-		return -1
-	} else if src.FileNumber > dst.FileNumber {
-		return 1
-	}
-
-	return 0
-}
-
-type FileInfo struct {
-	Name          string
-	Version       Version
-	Comment       string
-	MigrationType MigrationType
-}
 
 type Logger interface {
 	DebugContext(ctx context.Context, msg string, args ...any)
@@ -70,9 +25,31 @@ type Logger interface {
 type Migrator struct {
 	db     *sql.DB
 	logger Logger
-	target Version
+	target ver.Version
 	table  string
 	path   string
+}
+
+func NewDefaultLogger() *slog.Logger {
+	opts := grovelog.NewOptions(slog.LevelDebug, "", grovelog.Color)
+	return grovelog.NewLogger(os.Stdout, opts)
+}
+
+func New(
+	db *sql.DB, logger Logger,
+	major, minor int,
+	table, path string,
+) *Migrator {
+	if logger == nil {
+		logger = NewDefaultLogger()
+	}
+	return &Migrator{
+		db:     db,
+		logger: logger,
+		target: ver.Version{Major: major, Minor: minor},
+		table:  table,
+		path:   path,
+	}
 }
 
 func (m *Migrator) Migrate(ctx context.Context) error {
@@ -85,21 +62,21 @@ func (m *Migrator) Migrate(ctx context.Context) error {
 		return err
 	}
 
-	fileNames, err := GetFileNames(ctx, m.path)
+	fileNames, err := parser.GetFileNames(ctx, m.path)
 	if err != nil {
 		return err
 	}
 
-	files := make([]*FileInfo, 0, len(fileNames))
+	files := make([]*parser.FileInfo, 0, len(fileNames))
 	for _, name := range fileNames {
-		info, err := ParseFileName(name)
+		info, err := parser.ParseFileName(name)
 		if err != nil {
 			return err
 		}
 		files = append(files, info)
 	}
 
-	files = FilterMigrationFiles(files, Up, current, m.target)
+	files = parser.FilterMigrationFiles(files, current, m.target)
 
 	if err := m.Execute(ctx, files); err != nil {
 		return err
@@ -162,7 +139,7 @@ func (m *Migrator) createMigrationTable(ctx context.Context) error {
 	return nil
 }
 
-func (m *Migrator) FetchCurrentVersion(ctx context.Context) (Version, error) {
+func (m *Migrator) FetchCurrentVersion(ctx context.Context) (ver.Version, error) {
 	query := fmt.Sprintf(`
 			SELECT major_version, minor_version, file_number
 			FROM %s
@@ -170,25 +147,20 @@ func (m *Migrator) FetchCurrentVersion(ctx context.Context) (Version, error) {
 			LIMIT 1
 		`, m.table)
 
-	v := Version{-1, -1, -1}
 	var major, minor, fileNumber string
 
-	err := m.db.QueryRowContext(ctx, query).Scan(major, minor, fileNumber)
+	err := m.db.QueryRowContext(ctx, query).Scan(&major, &minor, &fileNumber)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return v, nil
+			return ver.Zero, nil
 		}
-		return v, fmt.Errorf("querying current version: %w", err)
+		return ver.Zero, fmt.Errorf("querying current version: %w", err)
 	}
 
-	v.Major, _ = strconv.Atoi(major)
-	v.Minor, _ = strconv.Atoi(minor)
-	v.FileNumber, _ = strconv.Atoi(fileNumber)
-
-	return v, nil
+	return ver.ParseStringToVersion(major, minor, fileNumber)
 }
 
-func (m *Migrator) Execute(ctx context.Context, files []*FileInfo) error {
+func (m *Migrator) Execute(ctx context.Context, files []*parser.FileInfo) error {
 	tx, err := m.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("beginning transaction: %w", err)
@@ -203,7 +175,7 @@ func (m *Migrator) Execute(ctx context.Context, files []*FileInfo) error {
 
 	for _, file := range files {
 		filepath := filepath.Join(m.path, file.Name)
-		content, err := ReadFile(filepath)
+		content, err := parser.ReadFile(filepath)
 		if err != nil {
 			return fmt.Errorf("reading file: %w", err)
 		}
@@ -222,7 +194,7 @@ func (m *Migrator) Execute(ctx context.Context, files []*FileInfo) error {
 }
 
 func (m *Migrator) execute(
-	ctx context.Context, tx *sql.Tx, content []byte, file *FileInfo,
+	ctx context.Context, tx *sql.Tx, content []byte, file *parser.FileInfo,
 ) error {
 	if _, err := tx.ExecContext(ctx, string(content)); err != nil {
 		return fmt.Errorf("executing SQL: %w", err)
@@ -236,7 +208,7 @@ func (m *Migrator) execute(
 }
 
 // recordMigration records a migration in the history table
-func (m *Migrator) recordMigration(ctx context.Context, tx *sql.Tx, file *FileInfo) error {
+func (m *Migrator) recordMigration(ctx context.Context, tx *sql.Tx, file *parser.FileInfo) error {
 	query := fmt.Sprintf(`
 		INSERT INTO %s (major_version, minor_version, file_number, comment, migration_type)
 		VALUES ($1, $2, $3, $4, $5)

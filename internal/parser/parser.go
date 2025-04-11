@@ -1,4 +1,4 @@
-package migrator
+package parser
 
 import (
 	"context"
@@ -8,8 +8,30 @@ import (
 	"os"
 	"regexp"
 	"sort"
-	"strconv"
+
+	ver "github.com/AlonMell/migrator/internal/version"
 )
+
+type MigrationType int
+
+const (
+	Up MigrationType = iota
+	Down
+)
+
+func (mt MigrationType) String() string {
+	if mt == Up {
+		return "up"
+	}
+	return "down"
+}
+
+type FileInfo struct {
+	Name          string
+	Version       ver.Version
+	Comment       string
+	MigrationType MigrationType
+}
 
 // FileFormat: nnnn.mm.nn[.comment].(up|down).sql
 const pattern = `^(\d{4})\.(\d{2})\.(\d{2})(?:\.([^.]+))?\.(up|down)\.sql$`
@@ -23,35 +45,30 @@ func ParseFileName(fileName string) (*FileInfo, error) {
 		return nil, errors.New("incorrect File Format")
 	}
 
-	var info FileInfo
-
-	info.Name = fileName
-
-	fileNumber, _ := strconv.Atoi(matches[1])
-	major, _ := strconv.Atoi(matches[2])
-	minor, _ := strconv.Atoi(matches[3])
-
-	info.Version = Version{
-		Major:      major,
-		Minor:      minor,
-		FileNumber: fileNumber,
+	version, err := ver.ParseStringToVersion(matches[1], matches[2], matches[3])
+	if err != nil {
+		return nil, err
 	}
 
-	info.Comment = matches[4]
+	info := &FileInfo{
+		Name:          fileName,
+		Version:       version,
+		Comment:       matches[4],
+		MigrationType: Up,
+	}
 
-	info.MigrationType = Up
 	if matches[5] == "down" {
 		info.MigrationType = Down
 	}
 
-	return &info, nil
+	return info, nil
 }
 
 // FilterMigrationFiles returns sorted slice [FileInfo] and filtered by [MigrationType]
 func FilterMigrationFiles(
-	fileInfos []*FileInfo, migrationType MigrationType,
-	current Version, target Version,
+	fileInfos []*FileInfo, current, target ver.Version,
 ) []*FileInfo {
+	migrationType := getMigrationType(current, target)
 	if migrationType == Up {
 		// current < target
 		// range : [current target)
@@ -62,12 +79,19 @@ func FilterMigrationFiles(
 	return filterDown(fileInfos, current, target)
 }
 
-func filterUp(fileInfos []*FileInfo, current, target Version) []*FileInfo {
+func getMigrationType(current, target ver.Version) MigrationType {
+	if ver.CompareVersion(current, target) > 0 {
+		return Up
+	}
+	return Down
+}
+
+func filterUp(fileInfos []*FileInfo, current, target ver.Version) []*FileInfo {
 	var result []*FileInfo
 
 	for _, info := range fileInfos {
-		inRange := CompareVersion(info.Version, current) > 0 &&
-			CompareVersion(info.Version, target) <= 0
+		inRange := ver.CompareVersion(info.Version, current) > 0 &&
+			ver.CompareVersion(info.Version, target) <= 0
 
 		if info.MigrationType == Up && inRange {
 			result = append(result, info)
@@ -76,7 +100,7 @@ func filterUp(fileInfos []*FileInfo, current, target Version) []*FileInfo {
 
 	less := func(i, j int) bool {
 		vI, vJ := result[i].Version, result[j].Version
-		return CompareVersion(vI, vJ) < 0
+		return ver.CompareVersion(vI, vJ) < 0
 	}
 
 	sort.Slice(result, less)
@@ -84,12 +108,12 @@ func filterUp(fileInfos []*FileInfo, current, target Version) []*FileInfo {
 	return result
 }
 
-func filterDown(fileInfos []*FileInfo, current Version, target Version) []*FileInfo {
+func filterDown(fileInfos []*FileInfo, current, target ver.Version) []*FileInfo {
 	var result []*FileInfo
 
 	for _, info := range fileInfos {
-		inRange := CompareVersion(info.Version, current) <= 0 &&
-			CompareVersion(info.Version, target) > 0
+		inRange := ver.CompareVersion(info.Version, current) <= 0 &&
+			ver.CompareVersion(info.Version, target) > 0
 
 		if info.MigrationType == Down && inRange {
 			result = append(result, info)
@@ -98,7 +122,7 @@ func filterDown(fileInfos []*FileInfo, current Version, target Version) []*FileI
 
 	less := func(i, j int) bool {
 		vI, vJ := result[i].Version, result[j].Version
-		return CompareVersion(vI, vJ) > 0
+		return ver.CompareVersion(vI, vJ) > 0
 	}
 
 	sort.Slice(result, less)
