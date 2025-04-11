@@ -5,22 +5,25 @@ import (
 	"database/sql"
 	"fmt"
 	"log/slog"
-	"os"
 
-	"github.com/AlonMell/grovelog"
 	"github.com/AlonMell/migrator/internal/executor"
 	"github.com/AlonMell/migrator/internal/fetcher"
 	"github.com/AlonMell/migrator/internal/parser"
+	"github.com/AlonMell/migrator/internal/reader"
+	"github.com/AlonMell/migrator/internal/schema"
 	"github.com/AlonMell/migrator/pkg/types"
 	"github.com/AlonMell/migrator/pkg/version"
 )
 
 // Migrator handles database migrations
 type Migrator struct {
-	executor executor.Interface
-	fetcher  fetcher.Interface
-	logger   types.Logger
-	path     string
+	db             *sql.DB
+	logger         types.Logger
+	path           string
+	table          string
+	currentVersion *version.Version
+	targetVersion  *version.Version
+	migrationType  types.MigrationType
 }
 
 // Config holds configuration for Migrator
@@ -33,39 +36,13 @@ type Config struct {
 	MinorVer int
 }
 
-// DefaultLogger returns default logger for logging in migrator
-func DefaultLogger() *slog.Logger {
-	opts := grovelog.NewOptions(slog.LevelInfo, "", grovelog.Color)
-	return grovelog.NewLogger(os.Stdout, opts)
-}
-
-// New creates a new Migrator instance with the given configuration
-func New(config Config) *Migrator {
-	log := config.Logger
-	if log == nil {
-		log = DefaultLogger()
-	}
-
-	parser := parser.New()
-
-	current := version.New(0, 0, 0)
-	target := version.New(config.MajorVer, config.MinorVer, 0)
-
-	var migrationType types.MigrationType
-	if target.CompareTo(current) >= 0 {
-		migrationType = types.MigrationUp
-	} else {
-		migrationType = types.MigrationDown
-	}
-
-	executor := executor.New(config.DB, config.Table, log, parser, config.Path)
-	fetcher := fetcher.New(log, parser, migrationType, current, target)
-
+func New(cfg Config) *Migrator {
 	return &Migrator{
-		executor: executor,
-		fetcher:  fetcher,
-		logger:   log,
-		path:     config.Path,
+		db:            cfg.DB,
+		logger:        cfg.Logger,
+		path:          cfg.Path,
+		table:         cfg.Table,
+		targetVersion: version.New(cfg.MajorVer, cfg.MinorVer, 0),
 	}
 }
 
@@ -73,12 +50,18 @@ func New(config Config) *Migrator {
 func (m *Migrator) Migrate(ctx context.Context) error {
 	m.logger.InfoContext(ctx, "Starting migration process")
 
-	if err := m.executor.InitializeTable(ctx); err != nil {
-		return fmt.Errorf("initializing migration: %w", err)
+	schema := schema.New(m.db, m.table, m.logger)
+	currentVersion, err := schema.InitializeTable(ctx)
+	if err != nil {
+		return fmt.Errorf("initializing schema: %w", err)
 	}
+	m.currentVersion = currentVersion
 
-	// Get files to execute
-	files, err := m.fetcher.GetFilesToExecute(ctx, m.path)
+	m.migrationType = m.getMigrationType()
+
+	parser := parser.New()
+	fetcher := fetcher.New(m.logger, parser, m.migrationType, m.currentVersion, m.targetVersion)
+	files, err := fetcher.GetFilesToExecute(ctx, m.path)
 	if err != nil {
 		return fmt.Errorf("getting files to execute: %w", err)
 	}
@@ -88,13 +71,17 @@ func (m *Migrator) Migrate(ctx context.Context) error {
 		return nil
 	}
 
-	// Execute each file
-	for _, file := range files {
-		if err := m.executor.ExecuteFile(ctx, file); err != nil {
-			return fmt.Errorf("executing file %s: %w", file, err)
-		}
-	}
+	reader := reader.New(files, m.path)
+	executor := executor.New(m.db, m.table, m.logger, reader)
+	executor.Execute(ctx, files)
 
 	m.logger.InfoContext(ctx, "Migration completed successfully")
 	return nil
+}
+
+func (m *Migrator) getMigrationType() types.MigrationType {
+	if m.currentVersion.CompareTo(m.targetVersion) > 0 {
+		return types.MigrationDown
+	}
+	return types.MigrationUp
 }

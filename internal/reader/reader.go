@@ -1,6 +1,7 @@
 package reader
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -10,22 +11,19 @@ import (
 )
 
 type Reader struct {
-	files   []*types.File
-	path    string
-	current int
+	path string
 }
 
 func New(files []*types.File, path string) *Reader {
 	return &Reader{
-		files: files,
-		path:  path,
+		path: path,
 	}
 }
 
 // ReadFile reads the content of a file
-func (r *Reader) ReadFile() ([]byte, error) {
-	filePath := filepath.Join(r.path, r.files[r.current].Name)
-	file, err := os.Open(filePath)
+func (r *Reader) ReadFile(ctx context.Context, fileInfo *types.File) ([]byte, error) {
+	path := filepath.Join(r.path, fileInfo.Name)
+	file, err := os.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("opening file: %w", err)
 	}
@@ -36,6 +34,5 @@ func (r *Reader) ReadFile() ([]byte, error) {
 		return nil, fmt.Errorf("reading file: %w", err)
 	}
 
-	r.current++
 	return content, nil
 }

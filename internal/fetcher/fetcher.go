@@ -39,13 +39,13 @@ func New(
 // GetFilesToExecute gets the list of files to execute based on migration type
 func (f *Fetcher) GetFilesToExecute(
 	ctx context.Context, path string,
-) ([]types.File, error) {
+) ([]*types.File, error) {
 	allFiles, err := f.findMigrationFiles(path)
 	if err != nil {
 		return nil, fmt.Errorf("finding migration files: %w", err)
 	}
 
-	var filteredFiles []types.File
+	var filteredFiles []*types.File
 
 	if f.migrationType == types.MigrationUp {
 		filteredFiles = f.filterUpMigrationFiles(ctx, allFiles)
@@ -58,9 +58,9 @@ func (f *Fetcher) GetFilesToExecute(
 
 // filterUpMigrationFiles filters and sorts up migration files
 func (f *Fetcher) filterUpMigrationFiles(
-	ctx context.Context, files []types.File,
-) []types.File {
-	var result []types.File
+	ctx context.Context, files []*types.File,
+) []*types.File {
+	var result []*types.File
 
 	for _, file := range files {
 		if file.Type != types.MigrationUp {
@@ -83,9 +83,9 @@ func (f *Fetcher) filterUpMigrationFiles(
 
 // filterDownMigrationFiles filters and sorts down migration files
 func (f *Fetcher) filterDownMigrationFiles(
-	ctx context.Context, files []types.File,
-) []types.File {
-	var result []types.File
+	ctx context.Context, files []*types.File,
+) []*types.File {
+	var result []*types.File
 
 	for _, file := range files {
 		if file.Type != types.MigrationDown {
@@ -108,13 +108,13 @@ func (f *Fetcher) filterDownMigrationFiles(
 }
 
 // findMigrationFiles finds all migration files in the path
-func (f *Fetcher) findMigrationFiles(path string) ([]types.File, error) {
+func (f *Fetcher) findMigrationFiles(path string) ([]*types.File, error) {
 	files, err := os.ReadDir(path)
 	if err != nil {
 		return nil, fmt.Errorf("reading directory: %w", err)
 	}
 
-	var result []types.File
+	var result []*types.File
 
 	for _, file := range files {
 		if file.IsDir() {
@@ -124,7 +124,7 @@ func (f *Fetcher) findMigrationFiles(path string) ([]types.File, error) {
 		if err != nil {
 			return nil, err
 		}
-		result = append(result, *migrationFile)
+		result = append(result, migrationFile)
 	}
 
 	return result, nil
