@@ -3,7 +3,7 @@ package types
 import (
 	"context"
 
-	"github.com/AlonMell/migrator/pkg/version"
+	"github.com/AlonMell/migrator/internal/domain/version"
 )
 
 // MigrationType indicates the type of migration operation

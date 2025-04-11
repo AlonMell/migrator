@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"strconv"
 
-	"github.com/AlonMell/migrator/pkg/types"
-	"github.com/AlonMell/migrator/pkg/version"
+	"github.com/AlonMell/migrator/internal/domain/types"
+	"github.com/AlonMell/migrator/internal/domain/version"
 )
 
 // Schema manages the migration table schema

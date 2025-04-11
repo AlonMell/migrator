@@ -7,7 +7,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/AlonMell/migrator/pkg/types"
+	"github.com/AlonMell/migrator/internal/domain/types"
 )
 
 type Reader struct {
@@ -18,6 +18,21 @@ func New(path string) *Reader {
 	return &Reader{
 		path: path,
 	}
+}
+
+func (r *Reader) GetFileNames(ctx context.Context) ([]string, error) {
+	files, err := os.ReadDir(r.path)
+	if err != nil {
+		return nil, err
+	}
+
+	var names []string
+
+	for _, file := range files {
+		names = append(names, file.Name())
+	}
+
+	return names, nil
 }
 
 // ReadFile reads the content of a file

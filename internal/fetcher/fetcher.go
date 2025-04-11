@@ -2,17 +2,19 @@ package fetcher
 
 import (
 	"context"
-	"fmt"
-	"os"
 	"sort"
 
-	"github.com/AlonMell/migrator/internal/util/parser"
-	"github.com/AlonMell/migrator/pkg/types"
-	"github.com/AlonMell/migrator/pkg/version"
+	"github.com/AlonMell/migrator/internal/domain/types"
+	"github.com/AlonMell/migrator/internal/domain/version"
 )
+
+type Parser interface {
+	GetMigrationFiles(ctx context.Context) ([]*types.FileInfo, error)
+}
 
 type Fetcher struct {
 	logger        types.Logger
+	parser        Parser
 	migrationType types.MigrationType
 	current       *version.Version
 	target        *version.Version
@@ -20,11 +22,13 @@ type Fetcher struct {
 
 // New creates a new Fetcher instance
 func New(
-	logger types.Logger, migrationType types.MigrationType,
+	logger types.Logger, parser Parser,
+	migrationType types.MigrationType,
 	current, target *version.Version,
 ) *Fetcher {
 	return &Fetcher{
 		logger:        logger,
+		parser:        parser,
 		migrationType: migrationType,
 		current:       current,
 		target:        target,
@@ -32,20 +36,18 @@ func New(
 }
 
 // GetFilesToExecute gets the list of files to execute based on migration type
-func (f *Fetcher) GetFilesToExecute(
-	ctx context.Context, path string,
-) ([]*types.FileInfo, error) {
-	allFiles, err := f.findMigrationFiles(path)
+func (f *Fetcher) FilterMigrationFiles(ctx context.Context) ([]*types.FileInfo, error) {
+	files, err := f.parser.GetMigrationFiles(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("finding migration files: %w", err)
+		return nil, err
 	}
 
 	var filteredFiles []*types.FileInfo
 
 	if f.migrationType == types.MigrationUp {
-		filteredFiles = f.filterUpMigrationFiles(ctx, allFiles)
+		filteredFiles = f.filterUpMigrationFiles(ctx, files)
 	} else {
-		filteredFiles = f.filterDownMigrationFiles(ctx, allFiles)
+		filteredFiles = f.filterDownMigrationFiles(ctx, files)
 	}
 
 	return filteredFiles, nil
@@ -100,27 +102,4 @@ func (f *Fetcher) filterDownMigrationFiles(
 	})
 
 	return result
-}
-
-// findMigrationFiles finds all migration files in the path
-func (f *Fetcher) findMigrationFiles(path string) ([]*types.FileInfo, error) {
-	files, err := os.ReadDir(path)
-	if err != nil {
-		return nil, fmt.Errorf("reading directory: %w", err)
-	}
-
-	var result []*types.FileInfo
-
-	for _, file := range files {
-		if file.IsDir() {
-			continue
-		}
-		migrationFile, err := parser.GetMigrationFile(file.Name())
-		if err != nil {
-			return nil, err
-		}
-		result = append(result, migrationFile)
-	}
-
-	return result, nil
 }

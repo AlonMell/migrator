@@ -6,7 +6,7 @@ import (
 	"fmt"
 
 	"github.com/AlonMell/grovelog/util"
-	"github.com/AlonMell/migrator/pkg/types"
+	"github.com/AlonMell/migrator/internal/domain/types"
 )
 
 type Reader interface {

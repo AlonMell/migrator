@@ -6,12 +6,13 @@ import (
 	"fmt"
 	"log/slog"
 
+	"github.com/AlonMell/migrator/internal/domain/types"
+	"github.com/AlonMell/migrator/internal/domain/version"
 	"github.com/AlonMell/migrator/internal/executor"
 	"github.com/AlonMell/migrator/internal/fetcher"
+	"github.com/AlonMell/migrator/internal/parser"
 	"github.com/AlonMell/migrator/internal/reader"
 	"github.com/AlonMell/migrator/internal/schema"
-	"github.com/AlonMell/migrator/pkg/types"
-	"github.com/AlonMell/migrator/pkg/version"
 )
 
 // Config holds configuration for Migrator
@@ -38,20 +39,23 @@ func Migrate(ctx context.Context, cfg Config) error {
 
 	migrationType := getMigrationType(targetVersion, currentVersion)
 
-	fetcher := fetcher.New(cfg.Logger, migrationType, currentVersion, targetVersion)
-	files, err := fetcher.GetFilesToExecute(ctx, cfg.Path)
+	reader := reader.New(cfg.Path)
+	parser := parser.New(reader)
+
+	fetcher := fetcher.New(cfg.Logger, parser, migrationType, currentVersion, targetVersion)
+	files, err := fetcher.FilterMigrationFiles(ctx)
 	if err != nil {
 		return fmt.Errorf("getting files to execute: %w", err)
 	}
-
 	if len(files) == 0 {
 		cfg.Logger.InfoContext(ctx, "No migration files to execute - database is up to date")
 		return nil
 	}
 
-	reader := reader.New(cfg.Path)
 	executor := executor.New(cfg.Logger, cfg.DB, cfg.Table, reader)
-	executor.Execute(ctx, files)
+	if err := executor.Execute(ctx, files); err != nil {
+		return err
+	}
 
 	cfg.Logger.InfoContext(ctx, "Migration completed successfully")
 	return nil

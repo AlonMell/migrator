@@ -1,16 +1,50 @@
 package parser
 
 import (
+	"context"
 	"fmt"
 	"regexp"
 	"strconv"
 	"strings"
 
-	"github.com/AlonMell/migrator/pkg/types"
-	"github.com/AlonMell/migrator/pkg/version"
+	"github.com/AlonMell/migrator/internal/domain/types"
+	"github.com/AlonMell/migrator/internal/domain/version"
 )
 
-func GetMigrationFile(fileName string) (*types.FileInfo, error) {
+type Reader interface {
+	GetFileNames(context.Context) ([]string, error)
+}
+
+type Parser struct {
+	r Reader
+}
+
+func New(r Reader) *Parser {
+	return &Parser{
+		r: r,
+	}
+}
+
+func (p *Parser) GetMigrationFiles(ctx context.Context) ([]*types.FileInfo, error) {
+	fileNames, err := p.r.GetFileNames(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	var files []*types.FileInfo
+
+	for _, fileName := range fileNames {
+		file, err := getMigrationFile(fileName)
+		if err != nil {
+			return nil, err
+		}
+		files = append(files, file)
+	}
+
+	return files, nil
+}
+
+func getMigrationFile(fileName string) (*types.FileInfo, error) {
 	version, err := getVersionFromFilename(fileName)
 	if err != nil {
 		return nil, err
