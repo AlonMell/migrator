@@ -4,13 +4,15 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log/slog"
+	"os"
 	"os/exec"
-	"strconv"
+	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/AlonMell/grovelog"
 	"github.com/AlonMell/migrator"
-	ver "github.com/AlonMell/migrator/internal/version"
 	"github.com/fatih/color"
 	_ "github.com/lib/pq"
 	"github.com/stretchr/testify/assert"
@@ -18,18 +20,21 @@ import (
 )
 
 const (
-	dbHost          = "localhost"
-	dbPort          = 15432
-	dbUser          = "test"
-	dbPassword      = "test"
-	dbName          = "testdb"
+	// Database connection parameters
+	dbHost     = "localhost"
+	dbPort     = 15432
+	dbUser     = "test"
+	dbPassword = "test"
+	dbName     = "testdb"
+
+	// Migration configuration
 	migrationsTable = "migrations_test"
-	migrationsDir   = "/home/alonmell/dev/golang/migrator/test/migrations"
-	imageName       = "migrator-img"
-	containerName   = "migrator"
+
+	// Docker configuration
+	imageName     = "migrator-img"
+	containerName = "migrator"
 )
 
-// Подключение к тестовой БД
 func connectToDB(t *testing.T) *sql.DB {
 	connStr := fmt.Sprintf(
 		"postgres://%s:%s@%s:%d/%s?sslmode=disable",
@@ -37,38 +42,45 @@ func connectToDB(t *testing.T) *sql.DB {
 	)
 
 	db, err := sql.Open("postgres", connStr)
-	require.NoError(t, err, "Не удалось открыть соединение с БД")
+	require.NoError(t, err, "Failed to open database connection")
 
 	err = db.Ping()
-	require.NoError(t, err, "Не удалось подключиться к БД. Убедитесь, что PostgreSQL запущен в Docker на порту 15432")
+	require.NoError(t, err, "Failed to connect to the database. Make sure PostgreSQL is running in Docker on port 15432")
 
 	return db
 }
 
 func prepareDocker(t *testing.T) *sql.DB {
+	// Stop and remove any existing container
 	exec.Command("docker", "stop", containerName).Run()
 	exec.Command("docker", "rm", containerName).Run()
+
+	// Build the Docker image
 	cmd := exec.Command("docker", "build", "-t", imageName, ".")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		t.Fatalf("Ошибка сборки образа Docker: %v\nВывод: %s", err, output)
+		t.Fatalf("Docker image build error: %v\nOutput: %s", err, output)
 	}
 
-	dbPortString := strconv.Itoa(dbPort) + ":5432" //+ strconv.Itoa(dbPort)
-	cmd = exec.Command("docker", "run", "--name", containerName, "-p", dbPortString, "-d", imageName)
+	// Run the container
+	dbPortMapping := fmt.Sprintf("%d:5432", dbPort)
+	cmd = exec.Command("docker", "run", "--name", containerName, "-p", dbPortMapping, "-d", imageName)
 	output, err = cmd.CombinedOutput()
 	if err != nil {
-		t.Fatalf("Ошибка запуска контейнера Docker: %v\nВывод: %s", err, output)
+		t.Fatalf("Docker container start error: %v\nOutput: %s", err, output)
 	}
 
+	// Wait for the database to be ready
 	var db *sql.DB
 	maxAttempts := 10
+	connString := fmt.Sprintf(
+		"postgres://%s:%s@%s:%d/%s?sslmode=disable",
+		dbUser, dbPassword, dbHost, dbPort, dbName,
+	)
+
 	for range maxAttempts {
 		time.Sleep(time.Second)
-		db, err = sql.Open("postgres", fmt.Sprintf(
-			"postgres://%s:%s@%s:%d/%s?sslmode=disable",
-			dbUser, dbPassword, dbHost, dbPort, dbName,
-		))
+		db, err = sql.Open("postgres", connString)
 		if err != nil {
 			continue
 		}
@@ -79,97 +91,100 @@ func prepareDocker(t *testing.T) *sql.DB {
 		db.Close()
 	}
 
-	t.Fatalf("Не удалось подключиться к БД после %d попыток", maxAttempts)
+	t.Fatalf("Failed to connect to database after %d attempts", maxAttempts)
 	return nil
 }
 
+// TestMigrator runs a series of tests for the migrator functionality
 func TestMigrator(t *testing.T) {
-	db := prepareDocker(t)
-	color.NoColor = false
-	logger := migrator.NewDefaultLogger()
+	migrationsDir, err := filepath.Abs("migrations")
+	require.NoError(t, err, "Failed to get absolute path to migrations directory")
 
+	// Set up the test environment
+	db := prepareDocker(t)
+	defer func() {
+		db.Close()
+		exec.Command("docker", "stop", containerName).Run()
+		exec.Command("docker", "rm", containerName).Run()
+	}()
+
+	color.NoColor = false
+	opts := grovelog.NewOptions(slog.LevelDebug, "", grovelog.Color)
+	logger := grovelog.NewLogger(os.Stdout, opts)
 	ctx := context.Background()
 
-	t.Run("Инициализация таблицы миграций", func(t *testing.T) {
+	t.Run("Initialize migration table", func(t *testing.T) {
 		m := migrator.New(db, logger, 1, 0, migrationsTable, migrationsDir)
 
-		err := m.InitMigrationTable(ctx)
-		assert.NoError(t, err, "Должен инициализировать таблицу миграций без ошибок")
+		err := m.Migrate(ctx)
+		assert.NoError(t, err, "Should initialize migration table without errors")
 
-		// Проверяем, что таблица создана
-		var exists bool
-		err = db.QueryRowContext(ctx,
-			"SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_schema = 'public' AND table_name = $1)",
-			migrationsTable,
-		).Scan(&exists)
-		assert.NoError(t, err)
-		assert.True(t, exists, "Таблица миграций должна существовать")
-
-		// Проверяем начальную версию
-		version, err := m.FetchCurrentVersion(ctx)
-		assert.NoError(t, err)
-		assert.Equal(t, ver.Zero, version, "Начальная версия должна быть нулевой")
+		assertTableExists(t, db, migrationsTable, true)
 	})
 
-	t.Run("Применение Up-миграций", func(t *testing.T) {
+	t.Run("Apply Up migrations", func(t *testing.T) {
 		m := migrator.New(db, logger, 10, 0, migrationsTable, migrationsDir)
 
 		err := m.Migrate(ctx)
-		assert.NoError(t, err, "Миграции должны выполниться без ошибок")
+		assert.NoError(t, err, "Migrations should execute without errors")
 
-		tableExists(t, db, "logs", true)
-		tableExists(t, db, "users", true)
-		tableExists(t, db, "posts", true)
-		tableExists(t, db, "categories", true)
+		assertTableExists(t, db, "logs", true)
+		assertTableExists(t, db, "users", true)
+		assertTableExists(t, db, "posts", true)
+		assertTableExists(t, db, "categories", true)
 	})
 
-	t.Run("Откат с помощью Down-миграций", func(t *testing.T) {
+	t.Run("Rollback with Down migrations", func(t *testing.T) {
 		m := migrator.New(db, logger, 0, 1, migrationsTable, migrationsDir)
 
 		err := m.Migrate(ctx)
-		assert.NoError(t, err, "Откат миграций должен выполниться без ошибок")
+		assert.NoError(t, err, "Migration rollback should execute without errors")
 
-		tableExists(t, db, "logs", true)
-		tableExists(t, db, "users", true)
-		tableExists(t, db, "posts", false)
-		tableExists(t, db, "categories", false)
+		assertTableExists(t, db, "logs", true)
+		assertTableExists(t, db, "users", true)
+		assertTableExists(t, db, "posts", false)
+		assertTableExists(t, db, "categories", false)
 	})
 
-	// t.Run("Обработка ошибок при миграции", func(t *testing.T) {
-	// 	// Создаем директорию с некорректной миграцией
-	// 	invalidDir := filepath.Join(t.TempDir(), "invalid_migrations")
-	// 	require.NoError(t, os.MkdirAll(invalidDir, 0755))
+	t.Run("Apply migrations to specific version", func(t *testing.T) {
+		m := migrator.New(db, logger, 0, 2, migrationsTable, migrationsDir)
 
-	// 	// Создаем файл с некорректным SQL
-	// 	invalidSQL := "CREATE TABLE invalid_syntax (id INTEGER, );"
-	// 	invalidFile := filepath.Join(invalidDir, "0001.01.01.invalid.up.sql")
-	// 	require.NoError(t, os.WriteFile(invalidFile, []byte(invalidSQL), 0644))
+		err := m.Migrate(ctx)
+		assert.NoError(t, err, "Migrations should execute without errors")
 
-	// 	// Создаем мигратор с некорректным SQL
-	// 	m := migrator.New(db, logger, 1, 1, migrationsTable, invalidDir)
+		assertTableExists(t, db, "logs", true)
+		assertTableExists(t, db, "users", true)
+		assertTableExists(t, db, "posts", true)
+		assertTableExists(t, db, "categories", false)
+	})
 
-	// 	// Инициализируем таблицу миграций
-	// 	err := m.InitMigrationTable(ctx)
-	// 	require.NoError(t, err, "Должен инициализировать таблицу миграций")
+	t.Run("Handle errors during migration", func(t *testing.T) {
+		invalidDir := filepath.Join(t.TempDir(), "invalid_migrations")
+		require.NoError(t, os.MkdirAll(invalidDir, 0755))
 
-	// 	// Пытаемся выполнить некорректную миграцию
-	// 	err = m.Migrate(ctx)
-	// 	assert.Error(t, err, "Должна возникнуть ошибка при выполнении некорректной миграции")
-	// })
+		invalidSQL := "CREATE TABLE invalid_syntax (id INTEGER, );"
+		invalidFile := filepath.Join(invalidDir, "0001.01.01.invalid.up.sql")
+		require.NoError(t, os.WriteFile(invalidFile, []byte(invalidSQL), 0644))
+
+		m := migrator.New(db, logger, 1, 1, migrationsTable, invalidDir)
+
+		err := m.Migrate(ctx)
+		assert.Error(t, err, "Should return an error when executing invalid migration")
+	})
 }
 
-func tableExists(t *testing.T, db *sql.DB, tableName string, shouldExist bool) {
+func assertTableExists(t *testing.T, db *sql.DB, tableName string, shouldExist bool) {
 	var exists bool
 	query := "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = $1)"
 
 	err := db.QueryRowContext(context.Background(), query, tableName).Scan(&exists)
 	if err != nil {
-		t.Fatalf("Ошибка при проверке существования таблицы %s: %v", tableName, err)
+		t.Fatalf("Error checking table existence %s: %v", tableName, err)
 	}
 
 	if shouldExist {
-		assert.True(t, exists, "Таблица %s должна существовать", tableName)
+		assert.True(t, exists, "Table %s should exist", tableName)
 	} else {
-		assert.False(t, exists, "Таблицы %s не должна существовать", tableName)
+		assert.False(t, exists, "Table %s should not exist", tableName)
 	}
 }

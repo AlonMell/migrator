@@ -2,8 +2,6 @@ package version
 
 import "strconv"
 
-var Zero Version = Version{-1, -1, -1}
-
 type Version struct {
 	Major      int
 	Minor      int
@@ -21,6 +19,14 @@ func CompareVersion(src, dst Version) int {
 		return -1
 	} else if src.Minor > dst.Minor {
 		return 1
+	}
+
+	return 0
+}
+
+func CompareVersionWithFile(src, dst Version) int {
+	if res := CompareVersion(src, dst); res != 0 {
+		return res
 	}
 
 	if src.FileNumber < dst.FileNumber {

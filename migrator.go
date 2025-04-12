@@ -3,17 +3,20 @@ package migrator
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/AlonMell/grovelog"
 	"github.com/AlonMell/grovelog/util"
 	"github.com/AlonMell/migrator/internal/parser"
 	ver "github.com/AlonMell/migrator/internal/version"
 )
+
+var Zero ver.Version = ver.Version{Major: -1, Minor: -1, FileNumber: -1}
+var Last ver.Version = ver.Version{Major: 99, Minor: 99, FileNumber: 9999}
 
 type Logger interface {
 	DebugContext(ctx context.Context, msg string, args ...any)
@@ -31,7 +34,7 @@ type Migrator struct {
 }
 
 func NewDefaultLogger() *slog.Logger {
-	opts := grovelog.NewOptions(slog.LevelDebug, "", grovelog.Color)
+	opts := grovelog.NewOptions(slog.LevelInfo, "", grovelog.Color)
 	return grovelog.NewLogger(os.Stdout, opts)
 }
 
@@ -57,55 +60,115 @@ func (m *Migrator) Migrate(ctx context.Context) error {
 	m.logger.InfoContext(ctx, "Starting database migration")
 
 	if err := m.InitMigrationTable(ctx); err != nil {
-		m.logger.ErrorContext(ctx, "Initialization migration table completed with error", util.Err(err))
+		m.logger.ErrorContext(
+			ctx,
+			"Initialization migration table completed with error",
+			util.Err(err),
+		)
 		return err
 	}
-	m.logger.DebugContext(ctx, "Initialization migration table completed successfully")
+	m.logger.DebugContext(
+		ctx,
+		"Initialization migration table completed successfully",
+	)
 
 	m.logger.DebugContext(ctx, "Fetching current database version")
 	current, err := m.FetchCurrentVersion(ctx)
 	if err != nil {
-		m.logger.ErrorContext(ctx, "Failed to fetch current version", util.Err(err))
+		m.logger.ErrorContext(
+			ctx,
+			"Failed to fetch current version",
+			util.Err(err),
+		)
 		return err
 	}
-	m.logger.InfoContext(ctx, "Current database version", "version", current)
+	m.logger.InfoContext(
+		ctx,
+		"Current database version",
+		util.KV("version", current),
+	)
 
-	m.logger.DebugContext(ctx, "Getting migration files from path", "path", m.path)
+	m.logger.DebugContext(
+		ctx,
+		"Getting migration files from path",
+		util.KV("path", m.path),
+	)
 	fileNames, err := parser.GetFileNames(ctx, m.path)
 	if err != nil {
-		m.logger.ErrorContext(ctx, "Failed to get migration files", util.Err(err))
+		m.logger.ErrorContext(
+			ctx,
+			"Failed to get migration files",
+			util.Err(err),
+		)
 		return err
 	}
-	m.logger.DebugContext(ctx, "Found migration files", "count", len(fileNames))
+	m.logger.DebugContext(
+		ctx,
+		"Found migration files",
+		util.KV("count", len(fileNames)),
+	)
 
 	m.logger.DebugContext(ctx, "Parsing migration filenames")
 	files := make([]*parser.FileInfo, 0, len(fileNames))
 	for _, name := range fileNames {
-		m.logger.DebugContext(ctx, "Parsing filename", "file", name)
+		m.logger.DebugContext(
+			ctx,
+			"Parsing filename",
+			util.KV("file", name),
+		)
 		info, err := parser.ParseFileName(name)
 		if err != nil {
-			m.logger.ErrorContext(ctx, "Failed to parse filename", "file", name, util.Err(err))
+			m.logger.ErrorContext(
+				ctx,
+				"Failed to parse filename",
+				util.KV("file", name),
+				util.Err(err),
+			)
 			return err
 		}
 		files = append(files, info)
 	}
-	m.logger.DebugContext(ctx, "Successfully parsed all filenames")
+	m.logger.DebugContext(
+		ctx,
+		"Successfully parsed all filenames",
+	)
 
-	m.logger.DebugContext(ctx, "Filtering migration files", "current", current, "target", m.target)
+	m.logger.DebugContext(
+		ctx,
+		"Filtering migration files",
+		util.KV("current", current),
+		util.KV("target", m.target),
+	)
 	files = parser.FilterMigrationFiles(files, current, m.target)
-	m.logger.DebugContext(ctx, "Migration files filtered", "files_to_apply", len(files))
+	m.logger.DebugContext(
+		ctx,
+		"Migration files filtered",
+		util.KV("files_to_apply", len(files)),
+	)
 
 	if len(files) == 0 {
-		m.logger.InfoContext(ctx, "No migrations to apply, database is up to date")
+		m.logger.InfoContext(
+			ctx,
+			"No migrations to apply, database is up to date",
+		)
 		return nil
 	}
 
 	m.logger.InfoContext(ctx, "Executing migration files")
 	if err := m.Execute(ctx, files); err != nil {
-		m.logger.ErrorContext(ctx, "Migration execution failed", util.Err(err))
+		m.logger.ErrorContext(
+			ctx,
+			"Migration execution failed",
+			util.Err(err),
+		)
 		return err
 	}
-	m.logger.InfoContext(ctx, "Migration completed successfully", "from", current, "to", m.target)
+	m.logger.InfoContext(
+		ctx,
+		"Migration completed successfully",
+		util.KV("from", current),
+		util.KV("to", m.target),
+	)
 
 	return nil
 }
@@ -167,23 +230,73 @@ func (m *Migrator) createMigrationTable(ctx context.Context) error {
 
 func (m *Migrator) FetchCurrentVersion(ctx context.Context) (ver.Version, error) {
 	query := fmt.Sprintf(`
-			SELECT major_version, minor_version, file_number
+			SELECT major_version, minor_version, file_number, migration_type
 			FROM %s
-			ORDER BY date_applied DESC
-			LIMIT 1
+			ORDER BY date_applied ASC
 		`, m.table)
 
-	var major, minor, fileNumber string
-
-	err := m.db.QueryRowContext(ctx, query).Scan(&major, &minor, &fileNumber)
+	rows, err := m.db.QueryContext(ctx, query)
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return ver.Zero, nil
+		return Zero, fmt.Errorf("querying migrations: %w", err)
+	}
+	defer rows.Close()
+
+	migrations := make(map[string]bool)
+
+	for rows.Next() {
+		var major, minor, fileNumber, migrationType string
+		if err := rows.Scan(&major, &minor, &fileNumber, &migrationType); err != nil {
+			return Zero, fmt.Errorf("scanning migration record: %w", err)
 		}
-		return ver.Zero, fmt.Errorf("querying current version: %w", err)
+
+		key := fmt.Sprintf("%s_%s_%s", major, minor, fileNumber)
+		migrations[key] = migrationType == "up"
 	}
 
-	return ver.ParseStringToVersion(major, minor, fileNumber)
+	if err := rows.Err(); err != nil {
+		return Zero, fmt.Errorf("iterating migrations: %w", err)
+	}
+
+	maxVersion := Zero
+	foundActive := false
+
+	for key, isActive := range migrations {
+		if !isActive {
+			continue
+		}
+
+		parts := strings.Split(key, "_")
+		if len(parts) != 3 {
+			m.logger.WarnContext(
+				ctx,
+				"Inccorect key format",
+				util.KV("key", key),
+			)
+			continue
+		}
+
+		version, err := ver.ParseStringToVersion(parts[0], parts[1], parts[2])
+		if err != nil {
+			m.logger.WarnContext(
+				ctx,
+				"Error while parsing version",
+				util.KV("key", key),
+				util.Err(err),
+			)
+			continue
+		}
+
+		if !foundActive || ver.CompareVersion(version, maxVersion) > 0 {
+			maxVersion = version
+			foundActive = true
+		}
+	}
+
+	if !foundActive {
+		return Zero, nil
+	}
+
+	return maxVersion, nil
 }
 
 func (m *Migrator) Execute(ctx context.Context, files []*parser.FileInfo) error {
@@ -205,11 +318,19 @@ func (m *Migrator) Execute(ctx context.Context, files []*parser.FileInfo) error 
 		if err != nil {
 			return fmt.Errorf("reading file: %w", err)
 		}
-		m.logger.DebugContext(ctx, "Execute migration SQL script", "file", file.Name)
+		m.logger.DebugContext(
+			ctx,
+			"Execute migration SQL script",
+			util.KV("file", file.Name),
+		)
 		if err := m.execute(ctx, tx, content, file); err != nil {
 			return fmt.Errorf("executing file: %w", err)
 		}
-		m.logger.DebugContext(ctx, "Executing complete successfully", "file", file.Name)
+		m.logger.DebugContext(
+			ctx,
+			"Executing complete successfully",
+			util.KV("file", file.Name),
+		)
 	}
 
 	if err = tx.Commit(); err != nil {
@@ -242,13 +363,16 @@ func (m *Migrator) recordMigration(ctx context.Context, tx *sql.Tx, file *parser
 	fileNumber := fmt.Sprintf("%04d", file.Version.FileNumber)
 	migrationType := file.MigrationType.String()
 
-	m.logger.DebugContext(ctx, "Recording migration",
-		"major_version", majorVersion,
-		"minor_version", minorVersion,
-		"file_number", fileNumber,
-		"comment", file.Comment,
-		"migration_type", migrationType,
-		"table", m.table)
+	m.logger.DebugContext(
+		ctx,
+		"Recording migration",
+		util.KV("major_version", majorVersion),
+		util.KV("minor_version", minorVersion),
+		util.KV("file_number", fileNumber),
+		util.KV("comment", file.Comment),
+		util.KV("migration_type", migrationType),
+		util.KV("table", m.table),
+	)
 
 	query := fmt.Sprintf(`
 		INSERT INTO %s (major_version, minor_version, file_number, comment, migration_type)

@@ -34,6 +34,7 @@ type FileInfo struct {
 }
 
 // FileFormat: nnnn.mm.nn[.comment].(up|down).sql
+// FileFormat:FileNumber.Major.Minor.Comment.Up|Down
 const pattern = `^(\d{4})\.(\d{2})\.(\d{2})(?:\.([^.]+))?\.(up|down)\.sql$`
 
 var re *regexp.Regexp = regexp.MustCompile(pattern)
@@ -45,7 +46,7 @@ func ParseFileName(fileName string) (*FileInfo, error) {
 		return nil, errors.New("incorrect File Format")
 	}
 
-	version, err := ver.ParseStringToVersion(matches[1], matches[2], matches[3])
+	version, err := ver.ParseStringToVersion(matches[2], matches[3], matches[1])
 	if err != nil {
 		return nil, err
 	}
@@ -102,7 +103,7 @@ func filterUp(fileInfos []*FileInfo, current, target ver.Version) []*FileInfo {
 
 	less := func(i, j int) bool {
 		vI, vJ := result[i].Version, result[j].Version
-		return ver.CompareVersion(vI, vJ) < 0
+		return ver.CompareVersionWithFile(vI, vJ) < 0
 	}
 
 	sort.Slice(result, less)
@@ -124,7 +125,7 @@ func filterDown(fileInfos []*FileInfo, current, target ver.Version) []*FileInfo 
 
 	less := func(i, j int) bool {
 		vI, vJ := result[i].Version, result[j].Version
-		return ver.CompareVersion(vI, vJ) > 0
+		return ver.CompareVersionWithFile(vI, vJ) > 0
 	}
 
 	sort.Slice(result, less)
