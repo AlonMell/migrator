@@ -39,11 +39,11 @@ func ParseStringToVersion(major, minor, fileNumber string) (Version, error) {
 	if err != nil {
 		return v, err
 	}
-	minorInt, err := strconv.Atoi(major)
+	minorInt, err := strconv.Atoi(minor)
 	if err != nil {
 		return v, err
 	}
-	fileNumberInt, err := strconv.Atoi(major)
+	fileNumberInt, err := strconv.Atoi(fileNumber)
 	if err != nil {
 		return v, err
 	}

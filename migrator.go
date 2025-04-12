@@ -52,35 +52,60 @@ func New(
 	}
 }
 
+// Migrate performs database migration from the current version to the target version
 func (m *Migrator) Migrate(ctx context.Context) error {
+	m.logger.InfoContext(ctx, "Starting database migration")
+
 	if err := m.InitMigrationTable(ctx); err != nil {
+		m.logger.ErrorContext(ctx, "Initialization migration table completed with error", util.Err(err))
 		return err
 	}
+	m.logger.DebugContext(ctx, "Initialization migration table completed successfully")
 
+	m.logger.DebugContext(ctx, "Fetching current database version")
 	current, err := m.FetchCurrentVersion(ctx)
 	if err != nil {
+		m.logger.ErrorContext(ctx, "Failed to fetch current version", util.Err(err))
 		return err
 	}
+	m.logger.InfoContext(ctx, "Current database version", "version", current)
 
+	m.logger.DebugContext(ctx, "Getting migration files from path", "path", m.path)
 	fileNames, err := parser.GetFileNames(ctx, m.path)
 	if err != nil {
+		m.logger.ErrorContext(ctx, "Failed to get migration files", util.Err(err))
 		return err
 	}
+	m.logger.DebugContext(ctx, "Found migration files", "count", len(fileNames))
 
+	m.logger.DebugContext(ctx, "Parsing migration filenames")
 	files := make([]*parser.FileInfo, 0, len(fileNames))
 	for _, name := range fileNames {
+		m.logger.DebugContext(ctx, "Parsing filename", "file", name)
 		info, err := parser.ParseFileName(name)
 		if err != nil {
+			m.logger.ErrorContext(ctx, "Failed to parse filename", "file", name, util.Err(err))
 			return err
 		}
 		files = append(files, info)
 	}
+	m.logger.DebugContext(ctx, "Successfully parsed all filenames")
 
+	m.logger.DebugContext(ctx, "Filtering migration files", "current", current, "target", m.target)
 	files = parser.FilterMigrationFiles(files, current, m.target)
+	m.logger.DebugContext(ctx, "Migration files filtered", "files_to_apply", len(files))
 
+	if len(files) == 0 {
+		m.logger.InfoContext(ctx, "No migrations to apply, database is up to date")
+		return nil
+	}
+
+	m.logger.InfoContext(ctx, "Executing migration files")
 	if err := m.Execute(ctx, files); err != nil {
+		m.logger.ErrorContext(ctx, "Migration execution failed", util.Err(err))
 		return err
 	}
+	m.logger.InfoContext(ctx, "Migration completed successfully", "from", current, "to", m.target)
 
 	return nil
 }
@@ -89,6 +114,7 @@ func (m *Migrator) InitMigrationTable(ctx context.Context) error {
 	if exists, err := m.tableExists(ctx); err != nil {
 		return fmt.Errorf("checking migration table: %w", err)
 	} else if exists {
+		m.logger.InfoContext(ctx, "Migration table already exists")
 		return nil
 	}
 
@@ -179,9 +205,11 @@ func (m *Migrator) Execute(ctx context.Context, files []*parser.FileInfo) error 
 		if err != nil {
 			return fmt.Errorf("reading file: %w", err)
 		}
+		m.logger.DebugContext(ctx, "Execute migration SQL script", "file", file.Name)
 		if err := m.execute(ctx, tx, content, file); err != nil {
 			return fmt.Errorf("executing file: %w", err)
 		}
+		m.logger.DebugContext(ctx, "Executing complete successfully", "file", file.Name)
 	}
 
 	if err = tx.Commit(); err != nil {
@@ -209,23 +237,42 @@ func (m *Migrator) execute(
 
 // recordMigration records a migration in the history table
 func (m *Migrator) recordMigration(ctx context.Context, tx *sql.Tx, file *parser.FileInfo) error {
+	majorVersion := fmt.Sprintf("%02d", file.Version.Major)
+	minorVersion := fmt.Sprintf("%02d", file.Version.Minor)
+	fileNumber := fmt.Sprintf("%04d", file.Version.FileNumber)
+	migrationType := file.MigrationType.String()
+
+	m.logger.DebugContext(ctx, "Recording migration",
+		"major_version", majorVersion,
+		"minor_version", minorVersion,
+		"file_number", fileNumber,
+		"comment", file.Comment,
+		"migration_type", migrationType,
+		"table", m.table)
+
 	query := fmt.Sprintf(`
 		INSERT INTO %s (major_version, minor_version, file_number, comment, migration_type)
 		VALUES ($1, $2, $3, $4, $5)
 	`, m.table)
 
-	_, err := tx.ExecContext(
+	res, err := tx.ExecContext(
 		ctx,
 		query,
-		fmt.Sprintf("%02d", file.Version.Major),
-		fmt.Sprintf("%02d", file.Version.Minor),
-		fmt.Sprintf("%04d", file.Version.FileNumber),
+		majorVersion,
+		minorVersion,
+		fileNumber,
 		file.Comment,
-		file.MigrationType.String(),
+		migrationType,
 	)
-
 	if err != nil {
 		return fmt.Errorf("inserting migration record: %w", err)
+	}
+
+	rowsAffected, err := res.RowsAffected()
+	if err != nil {
+		m.logger.WarnContext(ctx, "Failed to get rows affected", util.Err(err))
+	} else {
+		m.logger.DebugContext(ctx, "Migration record inserted", "rows_affected", rowsAffected)
 	}
 
 	return nil

@@ -71,16 +71,18 @@ func FilterMigrationFiles(
 	migrationType := getMigrationType(current, target)
 	if migrationType == Up {
 		// current < target
-		// range : [current target)
+		// ---------->------------>
+		// range : (current target]
 		return filterUp(fileInfos, current, target)
 	}
 	// current > target
+	// --------<----------<----
 	// range : (target current]
 	return filterDown(fileInfos, current, target)
 }
 
 func getMigrationType(current, target ver.Version) MigrationType {
-	if ver.CompareVersion(current, target) > 0 {
+	if ver.CompareVersion(current, target) < 0 {
 		return Up
 	}
 	return Down

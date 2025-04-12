@@ -1,0 +1,5 @@
+ALTER TABLE posts
+DROP CONSTRAINT IF EXISTS fk_posts_category,
+DROP COLUMN IF EXISTS category_id;
+
+DROP TABLE IF EXISTS categories;
